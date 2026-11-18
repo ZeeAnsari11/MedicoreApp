@@ -40,6 +40,20 @@ export interface SaleListParams {
 
 const branchQuery = (branchId: string | null | undefined) => (branchId ? `?branchId=${branchId}` : '');
 
+/** `GET /sales/report/pdf?filters`: one PDF of every sale matching the filters (paging is ignored), totals included. */
+export function salesReportPath(p: Omit<SaleListParams, 'page' | 'limit'>) {
+  const params = new URLSearchParams();
+  if (p.branchId) params.set('branchId', p.branchId);
+  if (p.customerId) params.set('customerId', p.customerId);
+  if (p.orderBookerId) params.set('orderBookerId', p.orderBookerId);
+  if (p.paymentStatus) params.set('paymentStatus', p.paymentStatus);
+  if (p.returnStatus) params.set('returnStatus', p.returnStatus);
+  if (p.startDate) params.set('startDate', p.startDate);
+  if (p.endDate) params.set('endDate', p.endDate);
+  if (p.search) params.set('search', p.search);
+  return `/sales/report/pdf?${params.toString()}`;
+}
+
 /** `GET /sales?page&limit&filters`: server-side filtering and paging; pending orders are not listed (they have no invoice yet). */
 export function useSalesPage(p: SaleListParams) {
   const query = useTenantQuery<PaginatedSales>({
@@ -59,7 +73,7 @@ export function useSalesPage(p: SaleListParams) {
     placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
-  return { sales: query.data?.items ?? [], total: query.data?.total ?? 0, isLoading: query.isLoading, isFetching: query.isFetching, error: query.error, refetch: query.refetch };
+  return { sales: query.data?.items ?? [], total: query.data?.total ?? 0, summary: query.data?.summary, isLoading: query.isLoading, isFetching: query.isFetching, error: query.error, refetch: query.refetch };
 }
 
 /** One sale with the server's `isEditable` / `lockReason`. */

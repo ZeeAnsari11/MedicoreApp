@@ -7,7 +7,8 @@ import { createHarness, disabled, makeUser } from '@/test-support/screen-harness
 // babel-jest hoists these above the imports.
 jest.mock('@/config/env', () => ({ API_BASE_URL: 'http://api.test/api', API_URL_CONFIGURED: true, REQUEST_TIMEOUT_MS: 1000 }));
 const mockPush = jest.fn();
-jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: (...a: unknown[]) => mockPush(...a) }, useLocalSearchParams: () => ({}), Stack: { Screen: () => null }, Link: ({ children }: { children: unknown }) => children }));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: (...a: unknown[]) => mockPush(...a) }, useLocalSearchParams: () => ({}), Stack: { Screen: () => null }, Link: (props: object) => require('@/test-support/link-mock').MockLink(props) }));
 jest.setTimeout(20000);
 configure({ asyncUtilTimeout: 5000 });
 
@@ -38,6 +39,8 @@ describe('"View ledger" entry points (web customers / vendors row action)', () =
   it('vendors: opens the vendor ledger for that vendor', async () => {
     h.me = makeUser(['vendors:read', 'acc_vendor_ledger:read']);
     await h.wrap(<VendorsScreen />);
+    // Row actions live in the sheet that opens when the vendor row is tapped.
+    await fireEvent.press(await screen.findByRole('button', { name: 'Acme Pharma' }));
     await fireEvent.press(await screen.findByRole('button', { name: 'View ledger' }));
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/accounting/vendor-ledger', params: { view: 'ledger', party: 'v1' } });
   });
@@ -45,6 +48,7 @@ describe('"View ledger" entry points (web customers / vendors row action)', () =
   it('vendors: disabled without acc_vendor_ledger:read', async () => {
     h.me = makeUser(['vendors:read']);
     await h.wrap(<VendorsScreen />);
+    await fireEvent.press(await screen.findByRole('button', { name: 'Acme Pharma' }));
     expect(disabled(await screen.findByRole('button', { name: 'View ledger' }))).toBe(true);
   });
 });

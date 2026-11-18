@@ -35,6 +35,7 @@ export const navSections: NavSection[] = [
       { label: 'Purchases', href: '/purchases', icon: 'cart-arrow-down', anyOf: ['purchases:read'] },
       { label: 'Process Orders', href: '/sales/process-orders', icon: 'clipboard-check-outline', anyOf: ['process_orders:read'] },
       { label: 'Cash Receipt', href: '/sales/cash-receipt', icon: 'hand-coin-outline', anyOf: ['cash_receipt:read'] },
+      { label: 'Cash Receipt Transactions', href: '/sales/cash-receipt-transactions', icon: 'format-list-checks', anyOf: ['cash_receipt:read'] },
       { label: 'Customers', href: '/customers', icon: 'account-group-outline', anyOf: ['customers:read'] },
     ],
   },

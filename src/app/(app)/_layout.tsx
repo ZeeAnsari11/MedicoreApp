@@ -1,9 +1,15 @@
 import { Stack } from 'expo-router';
 
+import { PlatformOnlyScreen } from '@/features/auth/platform-only-screen';
+import { useAuth } from '@/features/auth/use-auth';
 import { useTheme } from '@/theme';
+import { SystemRole } from '@/types/medicore';
 
 export default function AppLayout() {
   const theme = useTheme();
+  const { user, logout } = useAuth();
+  // Same rule as the web shell: the platform super admin never sees pharmacy screens (no routes, no deep links).
+  if (user?.systemRole === SystemRole.SUPER_ADMIN) return <PlatformOnlyScreen username={user.username} onSignOut={logout} />;
   return (
     <Stack screenOptions={{ headerStyle: { backgroundColor: theme.surface }, headerTintColor: theme.text, contentStyle: { backgroundColor: theme.background } }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -20,6 +26,7 @@ export default function AppLayout() {
       <Stack.Screen name="sales/return" options={{ title: 'Sale Return' }} />
       <Stack.Screen name="sales/process-orders" options={{ title: 'Process Orders' }} />
       <Stack.Screen name="sales/cash-receipt" options={{ title: 'Cash Receipt' }} />
+      <Stack.Screen name="sales/cash-receipt-transactions" options={{ title: 'Cash Receipt Transactions' }} />
       <Stack.Screen name="purchases/index" options={{ title: 'Purchases' }} />
       <Stack.Screen name="purchases/new" options={{ title: 'Receive Purchase' }} />
       <Stack.Screen name="purchases/edit" options={{ title: 'Edit Purchase' }} />

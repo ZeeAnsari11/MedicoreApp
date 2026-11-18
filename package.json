@@ -59,6 +59,8 @@
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
+    "emulator": "bash scripts/emulator.sh",
+    "emulator:setup": "bash scripts/setup-android-emulator.sh",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",

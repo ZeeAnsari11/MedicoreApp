@@ -5,9 +5,8 @@ import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 import { BranchFilter } from '@/components/branch-filter';
 import { ChipRow } from '@/components/chip-row';
 import { SortBar } from '@/components/sort-bar';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { ListRow } from '@/components/ui/list-row';
 import { SearchBar } from '@/components/ui/search-bar';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states';
 import { Text } from '@/components/ui/text';
@@ -15,6 +14,7 @@ import { useAuth } from '@/features/auth/use-auth';
 import { useBranchFilter } from '@/features/branches/use-branch-filter';
 import { matchesStockFilter, STOCK_FILTERS, type StockFilter } from '@/features/inventory/stock-filters';
 import { useInventoryRollup } from '@/features/inventory/use-inventory';
+import { productIcon } from '@/features/products/product-icon';
 import { useVendorSummary } from '@/features/vendor-products/use-vendor-products';
 import { expiryStatus, formatDate } from '@/lib/dates';
 import { formatRs } from '@/lib/format';
@@ -84,25 +84,35 @@ export default function InventoryScreen() {
       renderItem={({ item }) => {
         const vendors = vendorsByProduct.get(item.productId) ?? [];
         const expiry = item.nearestExpiryDate ? expiryStatus(item.nearestExpiryDate) : null;
+        const out = item.totalQuantity <= 0;
+        // Expired units or an expiry within 30 days are highlighted; further-out dates stay muted.
+        const expiryColor = item.expiredQuantity || expiry?.tone === 'danger' ? theme.danger : expiry?.tone === 'warning' ? theme.warning : undefined;
+        const details = [
+          item.barcode,
+          item.minStockLevel !== undefined ? `Min ${item.minStockLevel}` : undefined,
+          has('vendors:read') ? `Vendors: ${vendors.length === 0 ? '—' : vendors.map((v) => `${v.company}: ${formatRs(v.purchasePrice)}`).join(', ')}` : undefined,
+        ].filter(Boolean);
         return (
-          <Card>
-            <View style={styles.between}>
-              <Text variant="heading" style={styles.flex} onPress={() => openBatches(item)}>{item.productName}</Text>
-              <Text variant="heading">{item.totalQuantity}</Text>
-            </View>
-            <Text muted>Unit: {item.unit}{item.barcode ? ` · ${item.barcode}` : ''}</Text>
-            <View style={styles.badges}>
-              {item.isLowStock ? <Badge label="Low stock" tone="warning" /> : null}
-              {item.totalQuantity <= 0 ? <Badge label="Out of stock" tone="danger" /> : null}
-              {item.expiredQuantity ? <Badge label={`${item.expiredQuantity} expired`} tone="danger" /> : null}
-            </View>
-            <View style={styles.between}>
-              <Text muted>Nearest expiry: {item.nearestExpiryDate ? formatDate(item.nearestExpiryDate) : '—'}</Text>
-              {expiry ? <Badge label={expiry.label} tone={expiry.tone} /> : null}
-            </View>
-            {has('vendors:read') ? <Text muted>Vendors: {vendors.length === 0 ? '—' : vendors.map((v) => `${v.company}: ${formatRs(v.purchasePrice)}`).join(', ')}</Text> : null}
-            <Button label="View batches" variant="secondary" onPress={() => openBatches(item)} />
-          </Card>
+          <ListRow
+            title={item.productName}
+            subtitleIcon="calendar-clock"
+            subtitleColor={expiryColor}
+            subtitle={[
+              item.nearestExpiryDate ? `Expiry ${formatDate(item.nearestExpiryDate)} · ${expiry!.label}` : 'No expiry date',
+              item.expiredQuantity ? `${item.expiredQuantity} expired` : undefined,
+            ].filter(Boolean).join(' · ')}
+            detail={details.length ? details.join(' · ') : undefined}
+            icon={productIcon(item.productId)}
+            seed={item.productId}
+            status={out ? { label: 'Out of stock', tone: 'danger' } : item.isLowStock ? { label: 'Low stock', tone: 'warning' } : { label: 'In stock', tone: 'success' }}
+            trailing={
+              <View style={styles.qty}>
+                <Text variant="heading" color={out ? theme.danger : undefined}>{item.totalQuantity}</Text>
+                <Text variant="caption" muted>{item.unit}</Text>
+              </View>
+            }
+            onPress={() => openBatches(item)}
+          />
         );
       }}
       ListFooterComponent={list.hasMore ? <Text muted style={styles.footer}>Showing {list.visible.length} of {list.total}</Text> : undefined}
@@ -112,10 +122,9 @@ export default function InventoryScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  content: { padding: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  header: { gap: spacing.md, marginBottom: spacing.sm },
+  content: { paddingBottom: spacing.xxl, flexGrow: 1 },
+  header: { gap: spacing.md, padding: spacing.lg },
   actions: { flexDirection: 'row', gap: spacing.md },
-  between: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  badges: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  qty: { alignItems: 'flex-end', minWidth: 48 },
   footer: { textAlign: 'center', padding: spacing.md },
 });

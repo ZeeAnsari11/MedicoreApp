@@ -15,7 +15,8 @@ export interface SaleLine {
   priceExplicit: boolean;
   discountPercent?: number;
   taxPercent?: number;
-  allocations?: { batchId: string; batchNumber: string; quantity: number }[];
+  /** `expiryDate` is for display only (the request sends batch and quantity). */
+  allocations?: { batchId: string; batchNumber: string; quantity: number; expiryDate?: string }[];
 }
 
 /** Batches that can still be sold: stock left and not expired, nearest expiry first. */
@@ -115,7 +116,7 @@ export function linesFromSale(sale: Sale): SaleLine[] {
     priceExplicit: true,
     discountPercent: item.discountPercent,
     taxPercent: item.taxPercent,
-    allocations: item.allocationMode === AllocationMode.MANUAL ? item.batchAllocations.map((a) => ({ batchId: a.batchId, batchNumber: a.batchNumber, quantity: a.quantity })) : undefined,
+    allocations: item.allocationMode === AllocationMode.MANUAL ? item.batchAllocations.map((a) => ({ batchId: a.batchId, batchNumber: a.batchNumber, quantity: a.quantity, expiryDate: a.expiryDate })) : undefined,
   }));
 }
 

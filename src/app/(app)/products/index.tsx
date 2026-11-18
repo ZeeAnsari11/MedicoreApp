@@ -4,14 +4,15 @@ import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { BranchFilter } from '@/components/branch-filter';
 import { SortBar } from '@/components/sort-bar';
-import { Badge } from '@/components/ui/badge';
+import { ActionSheet } from '@/components/ui/action-sheet';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { ListRow } from '@/components/ui/list-row';
 import { SearchBar } from '@/components/ui/search-bar';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states';
 import { Text } from '@/components/ui/text';
 import { useAuth } from '@/features/auth/use-auth';
 import { useBranches } from '@/features/branches/use-branches';
+import { productIcon } from '@/features/products/product-icon';
 import { useProducts } from '@/features/products/use-products';
 import { useVendorSummary } from '@/features/vendor-products/use-vendor-products';
 import { confirmAction } from '@/lib/confirm';
@@ -38,6 +39,7 @@ export default function ProductsScreen() {
   const vendorsByProduct = useVendorSummary(has('vendors:read'));
   const [genericSearch, setGenericSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [selected, setSelected] = useState<Product | null>(null);
   const branchName = (id?: string) => branches.find((b) => b.id === id)?.name ?? '—';
 
   const byGeneric = useMemo(() => {
@@ -96,41 +98,49 @@ export default function ProductsScreen() {
         </View>
       }
       ListEmptyComponent={products.length === 0 ? <EmptyState title="No products yet" message="Add your first product to the catalog" /> : <EmptyState title="No matching products" message="Try a different search" />}
-      renderItem={({ item }) => {
-        const vendors = vendorsByProduct.get(item.id) ?? [];
-        return (
-          <Card>
-            <View style={styles.rowHead}>
-              <Text variant="heading" style={styles.flex} onPress={() => edit(item)}>{item.name}</Text>
-              <Badge label={item.status === ProductStatus.ACTIVE ? 'Active' : 'Discontinued'} tone={item.status === ProductStatus.ACTIVE ? 'success' : 'neutral'} />
-            </View>
-            <Text muted>{item.genericName || '—'} · {item.manufacturer?.name || '—'}</Text>
-            <Text muted>Branch: {branchName(item.branchId)} · Unit: {item.unit}</Text>
-            <Text muted>Vendors: {vendors.length === 0 ? '—' : vendors.map((v) => `${v.company}: ${formatRs(v.purchasePrice)}`).join(', ')}</Text>
-            <View style={styles.prices}>
-              <Text variant="label">TP {item.tp.toFixed(2)}</Text>
-              <Text variant="label">CP {item.cp.toFixed(2)}</Text>
-              <Text variant="label">RP {item.rp.toFixed(2)}</Text>
-            </View>
-            <View style={styles.actions}>
-              <Button label="Edit" variant="secondary" disabled={!canUpdate} onPress={() => edit(item)} />
-              <Button label="Print barcode" variant="secondary" onPress={() => router.push({ pathname: '/products/barcode', params: { id: item.id } } as never)} />
-              <Button label={item.status === ProductStatus.ACTIVE ? 'Discontinue' : 'Reactivate'} variant="secondary" disabled={!canUpdate} onPress={() => void toggleStatus(item)} />
-            </View>
-          </Card>
-        );
-      }}
-      ListFooterComponent={list.hasMore ? <Text muted style={styles.footer}>Showing {list.visible.length} of {list.total}</Text> : undefined}
+      renderItem={({ item }) => (
+        <ListRow
+          title={item.name}
+          subtitle={`${branchName(item.branchId)} · ${item.manufacturer?.name || '—'}`}
+          detail={`${item.genericName || '—'} · TP ${item.tp.toFixed(2)} · CP ${item.cp.toFixed(2)} · RP ${item.rp.toFixed(2)}`}
+          icon={productIcon(item.id)}
+          seed={item.id}
+          status={item.status === ProductStatus.ACTIVE ? { label: 'Active', tone: 'success' } : { label: 'Discontinued', tone: 'neutral' }}
+          onPress={() => setSelected(item)}
+        />
+      )}
+      ListFooterComponent={
+        <>
+          {list.hasMore ? <Text muted style={styles.footer}>Showing {list.visible.length} of {list.total}</Text> : null}
+          <ActionSheet
+            title={selected?.name}
+            subtitle={selected ? productSheetSubtitle(selected, vendorsByProduct.get(selected.id) ?? []) : undefined}
+            onClose={() => setSelected(null)}
+            actions={
+              selected && [
+                { label: 'Edit', disabled: !canUpdate, onPress: () => edit(selected) },
+                { label: 'Print barcode', onPress: () => router.push({ pathname: '/products/barcode', params: { id: selected.id } } as never) },
+                {
+                  label: selected.status === ProductStatus.ACTIVE ? 'Discontinue' : 'Reactivate',
+                  disabled: !canUpdate,
+                  destructive: selected.status === ProductStatus.ACTIVE,
+                  onPress: () => void toggleStatus(selected),
+                },
+              ]
+            }
+          />
+        </>
+      }
     />
   );
 }
 
+/** Unit and the vendor prices that used to sit on the card (web Vendors column). */
+const productSheetSubtitle = (p: Product, vendors: { company: string; purchasePrice: number }[]) =>
+  `Unit: ${p.unit} · Vendors: ${vendors.length === 0 ? '—' : vendors.map((v) => `${v.company}: ${formatRs(v.purchasePrice)}`).join(', ')}`;
+
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  content: { padding: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  header: { gap: spacing.md, marginBottom: spacing.sm },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  prices: { flexDirection: 'row', gap: spacing.lg },
-  actions: { gap: spacing.sm, marginTop: spacing.xs },
+  content: { paddingBottom: spacing.xxl, flexGrow: 1 },
+  header: { gap: spacing.md, padding: spacing.lg },
   footer: { textAlign: 'center', padding: spacing.md },
 });

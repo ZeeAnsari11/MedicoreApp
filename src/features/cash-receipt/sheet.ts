@@ -2,22 +2,14 @@
  * Cash Receipt sheet logic, ported from the web page (`sales/cash-receipt/page.tsx`). Display-side only: the backend
  * re-validates every row against the live invoice, posts the payments and numbers the voucher.
  */
-export interface LookupInvoice {
-  id: string;
-  invoiceNumber: string;
-  saleDate: string;
-  customerId: string;
-  customerName: string;
-  grandTotal: number;
-  netTotal: number;
-  received: number;
-  balance: number;
-  payable: boolean;
-  customerBalance: number;
-}
+import { PaymentMethod, type CashReceiptRowError, type CashTransaction, type LookupInvoice, type UpdateCashTransactionRequest } from '@/types/medicore';
+
+export type { CashReceiptRowError, LookupInvoice };
 
 export interface SheetRow {
   key: string;
+  /** Set for an entry loaded from a saved transaction; absent for a row added in this session. */
+  entryId?: string;
   invoiceId: string;
   invoiceNumber: string;
   customerId: string;
@@ -30,11 +22,6 @@ export interface SheetRow {
   balance: number;
   amount: string;
   error?: string;
-}
-
-export interface CashReceiptRowError {
-  invoiceId: string;
-  reason: string;
 }
 
 export const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -119,13 +106,46 @@ export const sheetTotal = (rows: readonly SheetRow[]) => round2(rows.reduce((s, 
 
 /** Validates every row; returns the rows with `error` set and whether any failed. */
 export function validateRows(rows: readonly SheetRow[]): { rows: SheetRow[]; hasErrors: boolean } {
-  const checked = rows.map((r) => ({ ...r, error: amountError(r.amount, r.balance) }));
+  const checked = rows.map((r) => ({ ...r, error: r.error === VOIDED_REASON ? VOIDED_REASON : amountError(r.amount, r.balance) }));
   return { rows: checked, hasErrors: checked.some((r) => r.error) };
 }
 
 export function buildSaveRequest(rows: readonly SheetRow[], batchId: string, now = new Date()) {
-  return { batchId, date: todayLocal(now), method: 'CASH' as const, rows: rows.map((r) => ({ invoiceId: r.invoiceId, amount: Number(r.amount) })) };
+  return { batchId, date: todayLocal(now), method: PaymentMethod.CASH, rows: rows.map((r) => ({ invoiceId: r.invoiceId, amount: Number(r.amount) })) };
 }
+
+/** Shown on a loaded entry whose payment was voided elsewhere; it can only be removed. */
+export const VOIDED_REASON = 'Its payment was voided elsewhere; remove this entry';
+
+/** A saved transaction as sheet rows. `balance` is the most an entry can be set to (what is still owed plus its own amount). */
+export const rowsOfTransaction = (tx: CashTransaction): SheetRow[] =>
+  tx.rows.map((r) => ({
+    key: r.entryId,
+    entryId: r.entryId,
+    invoiceId: r.invoiceId,
+    invoiceNumber: r.invoiceNumber,
+    customerId: r.customerId,
+    customerName: r.customerName,
+    customerBalance: r.customerBalance,
+    saleDate: r.saleDate,
+    voucherAmount: r.voucherAmount,
+    received: r.received,
+    balance: r.balance,
+    amount: String(r.amount),
+    error: r.paymentVoided ? VOIDED_REASON : undefined,
+  }));
+
+/** `T-0001`, `t-1` and `1` all mean the same transaction; anything else is not a transaction number. */
+export function normalizeTransactionNumber(raw: string): string | null {
+  const m = /^(?:t-?)?(\d{1,9})$/i.exec(raw.trim());
+  return m ? `T-${m[1].padStart(4, '0')}` : null;
+}
+
+/** Rows with an `entryId` update their entry, the others are added, and loaded entries left out are removed. */
+export const buildUpdateRequest = (rows: readonly SheetRow[], expectedVersion: number): UpdateCashTransactionRequest => ({
+  expectedVersion,
+  rows: rows.map((r) => ({ entryId: r.entryId, invoiceId: r.invoiceId, amount: Number(r.amount) })),
+});
 
 /** Maps the server's per-row reasons onto the sheet (rows without a reason lose their old error). */
 export const applyRowErrors = (rows: readonly SheetRow[], errors: readonly CashReceiptRowError[]): SheetRow[] =>

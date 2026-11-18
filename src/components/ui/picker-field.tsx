@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -29,10 +29,12 @@ interface Props {
   /** Adds a "Create new …" row (the web's ComboboxWithCreate); the caller opens its own create form. */
   onCreateNew?: () => void;
   createLabel?: string;
+  /** Replaces the default labelled field (e.g. a summary row); gets `open` to show the same searchable sheet. */
+  renderTrigger?: (trigger: { open: () => void; selectedLabel?: string }) => ReactNode;
 }
 
 /** Searchable single-select opened as a full-screen sheet; replaces the web Select / Combobox. */
-export function PickerField({ label, value, options, onChange, placeholder = 'Select', disabled, error, required, clearable, onCreateNew, createLabel }: Props) {
+export function PickerField({ label, value, options, onChange, placeholder = 'Select', disabled, error, required, clearable, onCreateNew, createLabel, renderTrigger }: Props) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -49,22 +51,28 @@ export function PickerField({ label, value, options, onChange, placeholder = 'Se
 
   return (
     <View style={styles.wrap}>
-      <Text variant="label" muted>
-        {label}
-        {required ? <Text variant="label" color={theme.danger}> *</Text> : null}
-      </Text>
-      <Pressable
-        accessibilityRole="combobox"
-        accessibilityLabel={label}
-        accessibilityState={{ disabled: !!disabled }}
-        disabled={disabled}
-        onPress={() => setOpen(true)}
-        style={[styles.field, { backgroundColor: theme.surface, borderColor: error ? theme.danger : theme.border, opacity: disabled ? 0.6 : 1 }]}
-      >
-        <Text color={selected ? theme.text : theme.textMuted} numberOfLines={1} style={styles.flex}>{selected?.label ?? placeholder}</Text>
-        <Text color={theme.textMuted}>▾</Text>
-      </Pressable>
-      {error ? <Text variant="caption" color={theme.danger}>{error}</Text> : null}
+      {renderTrigger ? (
+        renderTrigger({ open: () => setOpen(true), selectedLabel: selected?.label })
+      ) : (
+        <>
+          <Text variant="label" muted>
+            {label}
+            {required ? <Text variant="label" color={theme.danger}> *</Text> : null}
+          </Text>
+          <Pressable
+            accessibilityRole="combobox"
+            accessibilityLabel={label}
+            accessibilityState={{ disabled: !!disabled }}
+            disabled={disabled}
+            onPress={() => setOpen(true)}
+            style={[styles.field, { backgroundColor: theme.surface, borderColor: error ? theme.danger : theme.border, opacity: disabled ? 0.6 : 1 }]}
+          >
+            <Text color={selected ? theme.text : theme.textMuted} numberOfLines={1} style={styles.flex}>{selected?.label ?? placeholder}</Text>
+            <Text color={theme.textMuted}>▾</Text>
+          </Pressable>
+          {error ? <Text variant="caption" color={theme.danger}>{error}</Text> : null}
+        </>
+      )}
 
       <Modal visible={open} animationType="slide" onRequestClose={close}>
         <SafeAreaView style={[styles.flex, { backgroundColor: theme.background }]}>

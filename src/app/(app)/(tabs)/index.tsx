@@ -11,7 +11,6 @@ import { useAccountingOverview, useDashboardSummary } from '@/features/dashboard
 import { formatInt, formatRs } from '@/lib/format';
 import { useBranchFilter } from '@/features/branches/use-branch-filter';
 import { spacing, useTheme } from '@/theme';
-import { SystemRole } from '@/types/medicore';
 
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
@@ -29,10 +28,9 @@ export default function DashboardScreen() {
   const { branchId } = useBranchFilter();
   const [refreshing, setRefreshing] = useState(false);
 
-  const isPlatformAdmin = user?.systemRole === SystemRole.SUPER_ADMIN;
-  const canView = has('dashboard:read') && !isPlatformAdmin;
+  const canView = has('dashboard:read');
   const summary = useDashboardSummary(branchId);
-  const finance = useAccountingOverview(has('acc_overview:read') && !isPlatformAdmin);
+  const finance = useAccountingOverview(has('acc_overview:read'));
 
   const refresh = async () => {
     setRefreshing(true);
@@ -40,9 +38,6 @@ export default function DashboardScreen() {
     setRefreshing(false);
   };
 
-  if (isPlatformAdmin) {
-    return <EmptyState title="Platform administration" message="Platform admin screens (tenants, plans, subscriptions) are not available in this build yet." />;
-  }
   if (!hasAnyModule) return <EmptyState title="No modules assigned" message="Contact your administrator to get access." />;
   if (!canView) return <EmptyState title="No access" message="You don't have permission to view the dashboard." />;
   if (summary.isLoading) return <LoadingState />;

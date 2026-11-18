@@ -8,7 +8,8 @@ import { createHarness, disabled, makeUser } from '@/test-support/screen-harness
 
 // babel-jest hoists these above the imports.
 jest.mock('@/config/env', () => ({ API_BASE_URL: 'http://api.test/api', API_URL_CONFIGURED: true, REQUEST_TIMEOUT_MS: 1000 }));
-jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: jest.fn() }, Stack: { Screen: () => null }, Link: ({ children }: { children: unknown }) => children }));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: jest.fn() }, Stack: { Screen: () => null }, Link: (props: object) => require('@/test-support/link-mock').MockLink(props) }));
 jest.mock('@/lib/confirm', () => ({ confirmAction: jest.fn() }));
 jest.setTimeout(20000);
 configure({ asyncUtilTimeout: 5000 });

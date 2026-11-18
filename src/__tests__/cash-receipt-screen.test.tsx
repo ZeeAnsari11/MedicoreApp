@@ -15,6 +15,8 @@ import { TenantRole } from '@/types/medicore';
 // babel-jest hoists these above the imports.
 jest.mock('@/config/env', () => ({ API_BASE_URL: 'http://api.test/api', API_URL_CONFIGURED: true, REQUEST_TIMEOUT_MS: 1000 }));
 jest.mock('@/lib/confirm', () => ({ confirmAction: jest.fn() }));
+let mockParams: Record<string, string> = {};
+jest.mock('expo-router', () => ({ useLocalSearchParams: () => mockParams }));
 const mockShare = jest.fn();
 const mockPrint = jest.fn();
 jest.mock('@/features/documents/use-document-file', () => ({ useDocumentFile: () => ({ isBusy: false, share: mockShare, print: mockPrint }) }));
@@ -41,6 +43,7 @@ beforeEach(async () => {
   calls.length = 0;
   inFlight = 0;
   confirmMock.mockReset();
+  mockParams = {};
   mockShare.mockReset();
   mockPrint.mockReset();
   await AsyncStorage.clear();
@@ -211,7 +214,7 @@ describe('entering the sheet', () => {
     await fireEvent.changeText(screen.getByLabelText('Amount'), '700');
     await fireEvent.press(button('Add'));
     expect(await screen.findByText('Cannot exceed the balance of 600.00')).toBeTruthy();
-    expect(screen.getByText('No entries yet. Type a voucher number above.')).toBeTruthy();
+    expect(screen.getByText('No entries yet. Type a voucher number above, or load a transaction.')).toBeTruthy();
   });
 
   it('adds rows with running customer balances, the footer totals, and rejects the same invoice twice', async () => {
@@ -363,5 +366,211 @@ describe('saving', () => {
     expect(mockShare).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/sales/cash-receipts/r1/pdf?branchId=b1&invoiceId=i2' }));
     await fireEvent.press(button('Dismiss'));
     await waitFor(() => expect(screen.queryByText(/saved, total/)).toBeNull());
+  });
+});
+
+describe('transactions', () => {
+  const tx = {
+    id: 'r1', transactionNumber: 'T-0001', voucherNumber: 'CR-000001', branchId: 'b1', version: 2, date: '2026-11-18T00:00:00.000Z', method: 'CASH', total: 100,
+    rows: [{ entryId: 'e1', invoiceId: 'i1', invoiceNumber: '0001', customerId: 'c1', customerName: 'Ali Traders', saleDate: '2026-11-10T00:00:00.000Z', customerBalance: 2000, voucherAmount: 1000, received: 400, balance: 700, amount: 100, paymentVoided: false }],
+  };
+  const EDIT = [...BOTH, 'cash_receipt:update'];
+
+  async function loadTx(number = 'T-0001') {
+    await fireEvent.changeText(await screen.findByLabelText('Transaction #'), number);
+    await fireEvent.press(button('Load'));
+    return screen.findByText('Save edits');
+  }
+
+  it('saving a new receipt shows its transaction number', async () => {
+    confirmMock.mockResolvedValue(true);
+    routes['POST /sales/cash-receipts'] = () => ({ body: { ...saved, transactionNumber: 'T-0007', version: 1 } });
+    await wrap(<CashReceiptScreen />);
+    await addEntry('0001', '100');
+    await fireEvent.press(await screen.findByRole('button', { name: 'Save cash receipt' }));
+    expect(await screen.findByText('T-0007: 2 receipts saved, total Rs. 150.00 (CR-000001)')).toBeTruthy();
+  });
+
+  it('loads a transaction into the sheet and switches the button to Save edits', async () => {
+    me = user(EDIT);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await loadTx('t-1'); // normalised to T-0001
+    expect(callsTo('GET', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(1);
+    expect(screen.getByText(/Editing T-0001 \(CR-000001, version 2\)/)).toBeTruthy();
+    expect(screen.getByLabelText('Amount 0001').props.value).toBe('100');
+    expect(screen.getByText('Entries: 1')).toBeTruthy();
+    expect(screen.queryByText('Save cash receipt')).toBeNull();
+  });
+
+  it('rejects text that is not a transaction number without calling the server', async () => {
+    me = user(EDIT);
+    await wrap(<CashReceiptScreen />);
+    await fireEvent.changeText(await screen.findByLabelText('Transaction #'), 'CR-000001');
+    await fireEvent.press(button('Load'));
+    await waitFor(() => expect(toastTexts()).toContain('Enter a transaction number like T-0001'));
+    expect(calls.filter((c) => c.path.includes('by-number'))).toHaveLength(0);
+  });
+
+  it('asks before discarding entries already on screen', async () => {
+    me = user(EDIT);
+    confirmMock.mockResolvedValue(false);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await addEntry('0002', '50');
+    await fireEvent.changeText(screen.getByLabelText('Transaction #'), 'T-0001');
+    await fireEvent.press(button('Load'));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(callsTo('GET', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(0);
+    expect(screen.getByText('Entries: 1')).toBeTruthy();
+  });
+
+  it('saves edits with the loaded version, the entry ids and the new amounts, then shows the new version', async () => {
+    me = user(EDIT);
+    confirmMock.mockResolvedValue(true);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => ({ body: { ...tx, version: 3, total: 120, rows: [{ ...tx.rows[0], amount: 120 }] } });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await fireEvent.changeText(screen.getByLabelText('Amount 0001'), '120');
+    await fireEvent.press(button('Save edits'));
+    expect(await screen.findByText('Saved edits to T-0001 (version 3), total Rs. 120.00')).toBeTruthy();
+    expect(confirmMock.mock.calls[0][0]).toMatchObject({ title: 'Save edits?' });
+    const patches = callsTo('PATCH', '/sales/cash-receipts/by-number/T-0001');
+    expect(patches).toHaveLength(1);
+    expect(patches[0].body).toEqual({ expectedVersion: 2, rows: [{ entryId: 'e1', invoiceId: 'i1', amount: 120 }] });
+    expect(callsTo('POST', '/sales/cash-receipts')).toHaveLength(0);
+    expect(screen.getByLabelText('Amount 0001').props.value).toBe('120');
+  });
+
+  it('will not save an amount above what the entry can be raised to', async () => {
+    me = user(EDIT);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await fireEvent.changeText(screen.getByLabelText('Amount 0001'), '701');
+    await fireEvent.press(button('Save edits'));
+    expect(await screen.findByText('Cannot exceed the balance of 700.00')).toBeTruthy();
+    expect(callsTo('PATCH', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(0);
+  });
+
+  it('a stale edit (409) reloads the other person\'s version instead of overwriting it', async () => {
+    me = user(EDIT);
+    confirmMock.mockResolvedValue(true);
+    let version = 2;
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: { ...tx, version, rows: [{ ...tx.rows[0], amount: version === 2 ? 100 : 80 }] } });
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => {
+      version = 3;
+      return { status: 409, body: { message: 'This transaction was changed by someone else. Reload it and try again.', currentVersion: 3 } };
+    };
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await fireEvent.changeText(screen.getByLabelText('Amount 0001'), '120');
+    await fireEvent.press(button('Save edits'));
+    await waitFor(() => expect(screen.getByText(/version 3\)/)).toBeTruthy());
+    expect(screen.getByLabelText('Amount 0001').props.value).toBe('80');
+    expect(toastTexts()).toContain('This transaction was changed by someone else. Reload it and try again.');
+  });
+
+  it('shows the server\'s per-row reasons and keeps the edit', async () => {
+    me = user(EDIT);
+    confirmMock.mockResolvedValue(true);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => ({ status: 400, body: { message: 'Some rows could not be saved', errors: [{ invoiceId: 'i1', reason: 'Amount exceeds the balance of 120.00' }] } });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await fireEvent.changeText(screen.getByLabelText('Amount 0001'), '650');
+    await fireEvent.press(button('Save edits'));
+    expect(await screen.findByText('Amount exceeds the balance of 120.00')).toBeTruthy();
+    expect(screen.getByLabelText('Amount 0001').props.value).toBe('650');
+  });
+
+  it('needs cash_receipt:update to save edits', async () => {
+    me = user(BOTH);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    expect(disabled(button('Save edits'))).toBe(true);
+  });
+
+  it('an edit session is not kept as a draft', async () => {
+    me = user(EDIT);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(await AsyncStorage.getItem('cash-receipt-sheet:t1:u1')).toBeNull();
+  });
+
+  it('Exit edit goes back to a normal empty sheet', async () => {
+    me = user(EDIT);
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    await wrap(<CashReceiptScreen />);
+    await loadTx();
+    await fireEvent.press(button('Exit edit'));
+    expect(await screen.findByText('Entries: 0')).toBeTruthy();
+    expect(screen.getByText('Save cash receipt')).toBeTruthy();
+  });
+
+  describe('finding a transaction', () => {
+    const t = { id: 'r1', transactionNumber: 'T-0001', voucherNumber: 'CR-000001', branchId: 'b1', date: '2026-11-18T00:00:00.000Z', count: 1, total: 100, customers: ['Ali Traders'], version: 2, editedAt: null };
+    const list = (c: { path: string }) => {
+      const q = new URLSearchParams(c.path.split('?')[1]).get('q');
+      const items = [t].filter((x) => !q || x.transactionNumber.includes(q));
+      return { body: { items, total: items.length, page: 1, limit: 8 } };
+    };
+
+    it('starts with T- already in the box, and keeps it when only digits are typed', async () => {
+      me = user(EDIT);
+      await wrap(<CashReceiptScreen />);
+      const box = await screen.findByLabelText('Transaction #');
+      expect(box.props.value).toBe('T-');
+      expect(disabled(button('Load'))).toBe(true);
+      await fireEvent.changeText(box, '1');
+      expect(screen.getByLabelText('Transaction #').props.value).toBe('T-1');
+      await fireEvent.changeText(screen.getByLabelText('Transaction #'), 't-12');
+      expect(screen.getByLabelText('Transaction #').props.value).toBe('T-12');
+    });
+
+    it('suggests saved transactions like the voucher box does, and tapping one loads it', async () => {
+      me = user(EDIT);
+      routes['GET /sales/cash-receipts'] = list;
+      routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+      await wrap(<CashReceiptScreen />);
+      await fireEvent.changeText(await screen.findByLabelText('Transaction #'), '0001');
+      // What is typed is searched on the server (debounced), like the voucher box.
+      await waitFor(() => expect(callsTo('GET', '/sales/cash-receipts').some((c) => c.path.includes('q=T-0001'))).toBe(true));
+      await fireEvent.press(await screen.findByRole('button', { name: 'Transaction T-0001' }));
+      expect(await screen.findByText('Save edits')).toBeTruthy();
+      expect(callsTo('GET', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(1);
+    });
+
+    it('says so when nothing matches', async () => {
+      me = user(EDIT);
+      routes['GET /sales/cash-receipts'] = list;
+      await wrap(<CashReceiptScreen />);
+      await fireEvent.changeText(await screen.findByLabelText('Transaction #'), '9999');
+      expect(await screen.findByText('No transactions found')).toBeTruthy();
+    });
+
+    it('opens the transaction named in the link (?transaction=T-0001) once', async () => {
+      me = user(EDIT);
+      mockParams = { transaction: 'T-0001' };
+      routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+      await wrap(<CashReceiptScreen />);
+      expect(await screen.findByText('Save edits')).toBeTruthy();
+      expect(screen.getByText(/Editing T-0001/)).toBeTruthy();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(callsTo('GET', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(1);
+    });
+
+    it('Exit edit puts T- back in the box', async () => {
+      me = user(EDIT);
+      routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+      await wrap(<CashReceiptScreen />);
+      await loadTx();
+      await fireEvent.press(button('Exit edit'));
+      expect((await screen.findByLabelText('Transaction #')).props.value).toBe('T-');
+    });
   });
 });

@@ -4,12 +4,11 @@ import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { BranchFilter } from '@/components/branch-filter';
 import { SortBar } from '@/components/sort-bar';
-import { Badge } from '@/components/ui/badge';
+import { ActionSheet } from '@/components/ui/action-sheet';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { ListRow, pickBySeed } from '@/components/ui/list-row';
 import { SearchBar } from '@/components/ui/search-bar';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states';
-import { SwitchRow } from '@/components/ui/switch-row';
 import { Text } from '@/components/ui/text';
 import { useAuth } from '@/features/auth/use-auth';
 import { useBranches } from '@/features/branches/use-branches';
@@ -17,6 +16,8 @@ import { useVendors } from '@/features/vendors/use-vendors';
 import { compareText, useClientList } from '@/lib/use-client-list';
 import { spacing, useTheme } from '@/theme';
 import type { Vendor } from '@/types/medicore';
+
+const ICONS = ['truck-delivery-outline', 'store-outline', 'warehouse', 'package-variant-closed'] as const;
 
 const SORTS = [
   { key: 'company', label: 'Company' },
@@ -30,6 +31,7 @@ export default function VendorsScreen() {
   const { vendors, isLoading, error, refetch, setStatus } = useVendors();
   const { branches } = useBranches();
   const [refreshing, setRefreshing] = useState(false);
+  const [selected, setSelected] = useState<Vendor | null>(null);
   const branchName = (id?: string) => branches.find((b) => b.id === id)?.name ?? '—';
 
   const list = useClientList(vendors, {
@@ -68,29 +70,39 @@ export default function VendorsScreen() {
       }
       ListEmptyComponent={vendors.length === 0 ? <EmptyState title="No vendors yet" message="Add a vendor to start recording purchases" /> : <EmptyState title="No matching vendors" message="Try a different search" />}
       renderItem={({ item }) => (
-        <Card>
-          <View style={styles.rowHead}>
-            <Text variant="heading" style={styles.flex} onPress={() => edit(item)}>{item.company}</Text>
-            <Badge label={item.isActive ? 'Active' : 'Inactive'} tone={item.isActive ? 'success' : 'neutral'} />
-          </View>
-          <Text muted>Branch: {branchName(item.branchId)}</Text>
-          <Text muted>Type: {item.distributorType || '—'}</Text>
-          <Text muted>Contact: {item.contactPhone || '—'}</Text>
-          <SwitchRow label="Active" value={item.isActive} disabled={!canUpdate} onValueChange={(v) => void setStatus(item.id, v).catch(() => undefined)} />
-          {canUpdate ? <Button label="Edit" variant="secondary" onPress={() => edit(item)} /> : null}
-          <Button label="Manage pricing" variant="secondary" onPress={() => router.push({ pathname: '/vendors/pricing/vendor', params: { vendorId: item.id } } as never)} />
-          <Button label="View ledger" variant="secondary" disabled={!has('acc_vendor_ledger:read')} onPress={() => router.push({ pathname: '/accounting/vendor-ledger', params: { view: 'ledger', party: item.id } } as never)} />
-        </Card>
+        <ListRow
+          title={item.company}
+          subtitle={`${branchName(item.branchId)} · ${item.distributorType || '—'}`}
+          icon={pickBySeed(item.id, ICONS)}
+          seed={item.id}
+          status={item.isActive ? { label: 'Active', tone: 'success' } : { label: 'Inactive', tone: 'neutral' }}
+          onPress={() => setSelected(item)}
+        />
       )}
-      ListFooterComponent={list.hasMore ? <Text muted style={styles.footer}>Showing {list.visible.length} of {list.total}</Text> : undefined}
+      ListFooterComponent={
+        <>
+          {list.hasMore ? <Text muted style={styles.footer}>Showing {list.visible.length} of {list.total}</Text> : null}
+          <ActionSheet
+            title={selected?.company}
+            subtitle={selected ? `Contact: ${[selected.contactName, selected.contactPhone].filter(Boolean).join(' · ') || '—'}` : undefined}
+            onClose={() => setSelected(null)}
+            actions={
+              selected && [
+                ...(canUpdate ? [{ label: 'Edit', onPress: () => edit(selected) }] : []),
+                { label: 'Manage pricing', onPress: () => router.push({ pathname: '/vendors/pricing/vendor', params: { vendorId: selected.id } } as never) },
+                { label: 'View ledger', disabled: !has('acc_vendor_ledger:read'), onPress: () => router.push({ pathname: '/accounting/vendor-ledger', params: { view: 'ledger', party: selected.id } } as never) },
+                { label: selected.isActive ? 'Deactivate' : 'Activate', disabled: !canUpdate, destructive: selected.isActive, onPress: () => void setStatus(selected.id, !selected.isActive).catch(() => undefined) },
+              ]
+            }
+          />
+        </>
+      }
     />
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  content: { padding: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  header: { gap: spacing.md, marginBottom: spacing.sm },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  content: { paddingBottom: spacing.xxl, flexGrow: 1 },
+  header: { gap: spacing.md, padding: spacing.lg },
   footer: { textAlign: 'center', padding: spacing.md },
 });

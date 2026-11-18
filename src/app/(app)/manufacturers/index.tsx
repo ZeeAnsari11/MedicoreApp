@@ -3,19 +3,19 @@ import { useMemo, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { BranchFilter } from '@/components/branch-filter';
-import { Badge } from '@/components/ui/badge';
+import { ActionSheet } from '@/components/ui/action-sheet';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { ListRow, pickBySeed } from '@/components/ui/list-row';
 import { SearchBar } from '@/components/ui/search-bar';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/states';
-import { SwitchRow } from '@/components/ui/switch-row';
-import { Text } from '@/components/ui/text';
 import { useAuth } from '@/features/auth/use-auth';
 import { useBranchFilter } from '@/features/branches/use-branch-filter';
 import { useBranches } from '@/features/branches/use-branches';
 import { useManufacturers } from '@/features/manufacturers/use-manufacturers';
 import { spacing, useTheme } from '@/theme';
 import type { Manufacturer } from '@/types/medicore';
+
+const ICONS = ['pill', 'office-building', 'flask-outline', 'medical-bag', 'factory'] as const;
 
 export default function ManufacturersScreen() {
   const theme = useTheme();
@@ -25,6 +25,7 @@ export default function ManufacturersScreen() {
   const { branches } = useBranches();
   const [search, setSearch] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [selected, setSelected] = useState<Manufacturer | null>(null);
 
   // A specific branch shows only its own manufacturers; legacy ones with no branch appear under "All branches".
   const visible = useMemo(
@@ -60,25 +61,33 @@ export default function ManufacturersScreen() {
           : <EmptyState title="No matching manufacturers" message="Try a different search or branch" />
       }
       renderItem={({ item }) => (
-        <Card>
-          <View style={styles.rowHead}>
-            <Text variant="heading" style={styles.flex} onPress={() => edit(item)}>{item.name}</Text>
-            <Badge label={item.isActive ? 'Active' : 'Inactive'} tone={item.isActive ? 'success' : 'neutral'} />
-          </View>
-          <Text muted>Branch: {branchName(item.branchId)}</Text>
-          <Text muted>Country: {item.country || '—'}</Text>
-          <Text muted>Contact: {item.contactPhone || '—'}</Text>
-          <SwitchRow label="Active" value={item.isActive} disabled={!canUpdate} onValueChange={(v) => void setStatus(item.id, v).catch(() => undefined)} />
-          {canUpdate ? <Button label="Edit" variant="secondary" onPress={() => edit(item)} /> : null}
-        </Card>
+        <ListRow
+          title={item.name}
+          subtitle={`${branchName(item.branchId)} · ${item.country || '—'}`}
+          icon={pickBySeed(item.id, ICONS)}
+          seed={item.id}
+          status={item.isActive ? { label: 'Active', tone: 'success' } : { label: 'Inactive', tone: 'neutral' }}
+          onPress={() => setSelected(item)}
+        />
       )}
+      ListFooterComponent={
+        <ActionSheet
+          title={selected?.name}
+          subtitle={selected ? `Contact: ${selected.contactPhone || '—'}` : undefined}
+          onClose={() => setSelected(null)}
+          actions={
+            selected && [
+              ...(canUpdate ? [{ label: 'Edit', onPress: () => edit(selected) }] : []),
+              { label: selected.isActive ? 'Deactivate' : 'Activate', disabled: !canUpdate, destructive: selected.isActive, onPress: () => void setStatus(selected.id, !selected.isActive).catch(() => undefined) },
+            ]
+          }
+        />
+      }
     />
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  content: { padding: spacing.lg, gap: spacing.md, flexGrow: 1 },
-  header: { gap: spacing.md, marginBottom: spacing.sm },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  content: { paddingBottom: spacing.xxl, flexGrow: 1 },
+  header: { gap: spacing.md, padding: spacing.lg },
 });

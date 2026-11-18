@@ -15,7 +15,8 @@ import { PaymentStatus, TenantRole } from '@/types/medicore';
 jest.mock('@/config/env', () => ({ API_BASE_URL: 'http://api.test/api', API_URL_CONFIGURED: true, REQUEST_TIMEOUT_MS: 1000 }));
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn() },
-  Stack: { Screen: () => null },
+  // Renders the header's right-side buttons (the list's + and Filters live there).
+  Stack: { Screen: ({ options }: { options?: { headerRight?: () => unknown } }) => options?.headerRight?.() ?? null },
   useLocalSearchParams: () => ({ id: 'pu1', branchId: 'b1' }),
 }));
 jest.mock('@/lib/confirm', () => ({ confirmAction: jest.fn() }));
@@ -144,10 +145,12 @@ describe('Purchases list', () => {
     await wrap(<PurchasesListScreen />);
     expect(await screen.findByText('0001')).toBeTruthy();
     expect(screen.getByText(/Acme Pharma · Main/)).toBeTruthy();
-    expect(screen.getAllByText('PARTIAL').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Partially returned').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('RECEIVED').length).toBeGreaterThan(0);
-    expect(screen.getByText('Page 1 of 1 · 1 purchases')).toBeTruthy();
+    expect(screen.getByText('PARTIALLY PAID')).toBeTruthy();
+    expect(screen.getByText('PARTIALLY RETURNED')).toBeTruthy();
+    expect(screen.getByText('RECEIVED')).toBeTruthy();
+    expect(screen.getByText(new RegExp(` • ${purchase.items.length} items?$`))).toBeTruthy();
+    expect(screen.getByText('Page 1 of 1')).toBeTruthy();
+    expect(screen.getByText('1 purchases')).toBeTruthy();
   });
 
   it('pins a branch user to their branch in the query', async () => {
@@ -158,17 +161,38 @@ describe('Purchases list', () => {
     expect(q.get('limit')).toBe('10');
   });
 
-  it('sends filters to the server, resets to page 1, and clears them', async () => {
+  /** Opens the panel's dropdown `label` and picks `option` in its sheet. */
+  const pick = async (label: string, option: string) => {
+    await fireEvent.press(screen.getByRole('button', { name: new RegExp(`^${label}: `) }));
+    await fireEvent.press(await screen.findByRole('button', { name: option }));
+  };
+
+  it('filters are picked in the Filters panel and sent together on Apply (page 1); Reset clears them', async () => {
+    // The server finds nothing for "Paid", so the screen shows which filters are in force.
+    routes['GET /purchases'] = (c) =>
+      ({ body: c.path.includes('paymentStatus=PAID') ? { items: [], total: 0, page: 1, limit: 25 } : { items: [purchase], total: 1, page: 1, limit: 10 } });
     await wrap(<PurchasesListScreen />);
     await screen.findByText('0001');
-    await fireEvent.press(screen.getByLabelText('Payment: PAID'));
+    await fireEvent.press(button('Filters'));
+    await pick('Payment', 'Paid');
+    await pick('Returns', 'Any return');
+    await pick('Status', 'Received');
+    await pick('Rows', '25');
+    // Nothing is sent until Apply.
+    expect(callsTo('GET', '/purchases').some((c) => c.path.includes('paymentStatus'))).toBe(false);
+    await fireEvent.press(button('Apply Filters'));
     await waitFor(() => expect(callsTo('GET', '/purchases').some((c) => c.path.includes('paymentStatus=PAID'))).toBe(true));
-    await fireEvent.press(screen.getByLabelText('Returns: Any return'));
-    await waitFor(() => expect(callsTo('GET', '/purchases').some((c) => c.path.includes('returnStatus=ANY'))).toBe(true));
-    await fireEvent.press(screen.getByLabelText('Rows: 25'));
-    await waitFor(() => expect(callsTo('GET', '/purchases').some((c) => c.path.includes('limit=25'))).toBe(true));
-    await fireEvent.press(screen.getByText('Clear filters'));
-    await waitFor(() => expect(screen.queryByText('Clear filters')).toBeNull());
+    const q = new URLSearchParams(callsTo('GET', '/purchases').at(-1)!.path.split('?')[1]);
+    expect([q.get('paymentStatus'), q.get('returnStatus'), q.get('status'), q.get('limit'), q.get('page')]).toEqual(['PAID', 'ANY', 'RECEIVED', '25', '1']);
+    expect(screen.queryByRole('button', { name: 'Apply Filters' })).toBeNull();
+    expect(await screen.findByText('No purchases found')).toBeTruthy();
+
+    await fireEvent.press(button('Filters'));
+    expect(button('Payment: Paid')).toBeTruthy();
+    await fireEvent.press(button('Reset'));
+    expect(await screen.findByText('0001')).toBeTruthy();
+    expect(button('Payment: All')).toBeTruthy();
+    expect(button('Rows: 10')).toBeTruthy();
   });
 
   it('the New Purchase button needs purchases:create', async () => {
@@ -188,7 +212,9 @@ describe('Purchases list', () => {
     routes['GET /purchases'] = () => ({ body: { items: [], total: 0, page: 1, limit: 10 } });
     await wrap(<PurchasesListScreen />);
     expect(await screen.findByText('No purchases yet')).toBeTruthy();
-    await fireEvent.press(screen.getByLabelText('Payment: PAID'));
+    await fireEvent.press(button('Filters'));
+    await pick('Payment', 'Paid');
+    await fireEvent.press(button('Apply Filters'));
     expect(await screen.findByText('No purchases found')).toBeTruthy();
   });
 

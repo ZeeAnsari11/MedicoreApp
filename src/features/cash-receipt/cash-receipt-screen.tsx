@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useMemo, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ApiError } from '@/api/errors';
@@ -24,11 +25,14 @@ import {
   applyRowErrors,
   buildRow,
   buildSaveRequest,
+  buildUpdateRequest,
   draftKey,
   money,
   newBatchId,
+  normalizeTransactionNumber,
   parseDraft,
   rowErrorsOf,
+  rowsOfTransaction,
   runningBalances,
   serializeDraft,
   sheetTotal,
@@ -36,7 +40,26 @@ import {
   type LookupInvoice,
   type SheetRow,
 } from './sheet';
-import { cashReceiptPdfPath, useInvoiceLookup, useSaveCashReceipt, type CashReceiptResult } from './use-cash-receipts';
+import type { CashTransaction } from '@/types/medicore';
+import {
+  cashReceiptPdfPath,
+  useCashTransactionsPage,
+  useInvoiceLookup,
+  useLoadCashTransaction,
+  useSaveCashReceipt,
+  useUpdateCashTransaction,
+  type CashReceiptResult,
+} from './use-cash-receipts';
+
+/** The Transaction # box always starts with this, so only the digits need typing. */
+const TX_PREFIX = 'T-';
+
+/** A transaction being edited: its number and the version the edit was loaded at. */
+interface Editing {
+  number: string;
+  version: number;
+  voucherNumber: string;
+}
 
 /** Port of the web Cash Receipt page: an entry sheet of voucher (invoice) numbers and amounts, saved as one batch. */
 export function CashReceiptScreen() {
@@ -54,6 +77,8 @@ function CashReceiptSheet() {
   const doc = useDocumentFile();
   const guard = useSubmitGuard();
   const { save, isSaving } = useSaveCashReceipt();
+  const { loadTransaction, isLoading: isLoadingTransaction } = useLoadCashTransaction();
+  const { updateTransaction, isUpdating } = useUpdateCashTransaction();
 
   const [rows, setRows] = useState<SheetRow[]>([]);
   const [batchId, setBatchId] = useState(newBatchId);
@@ -63,6 +88,11 @@ function CashReceiptSheet() {
   const [amountInput, setAmountInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ result: CashReceiptResult; branchId: string | null } | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [transactionInput, setTransactionInput] = useState(TX_PREFIX);
+  const [txOpen, setTxOpen] = useState(false);
+  const { transaction: linkedTransaction } = useLocalSearchParams<{ transaction?: string }>();
+  const [notice, setNotice] = useState<string | null>(null);
 
   const storageKey = user ? draftKey(user.tenantId, user.userId) : null;
 
@@ -94,19 +124,25 @@ function CashReceiptSheet() {
     if (!restored || !storageKey) return;
     (async () => {
       try {
-        if (rows.length === 0) await AsyncStorage.removeItem(storageKey);
+        // An edit session is never kept as a draft: it reloads from the saved transaction.
+        if (rows.length === 0 || editing) await AsyncStorage.removeItem(storageKey);
         else await AsyncStorage.setItem(storageKey, serializeDraft({ rows, batchId, branchId }));
       } catch {
         // Not persisting the draft is not fatal.
       }
     })();
-  }, [restored, rows, batchId, branchId, storageKey]);
+  }, [restored, rows, batchId, branchId, storageKey, editing]);
 
   const query = useDebouncedValue(voucherInput.trim(), 300);
   // Typing again after picking an invoice means searching again.
   const searching = !selected || voucherInput.trim() !== selected.invoiceNumber;
   const lookup = useInvoiceLookup(searching ? query : '', branchId);
   const matches = searching ? lookup.invoices : [];
+
+  // Saved transactions matching what is typed after "T-"; the latest few while nothing is typed yet.
+  const txQuery = useDebouncedValue(transactionInput.trim(), 300);
+  const txLookup = useCashTransactionsPage({ branchId, q: txQuery === TX_PREFIX ? undefined : txQuery || undefined, page: 1, limit: 8 }, txOpen && !isLoadingTransaction);
+  const txMatches = txOpen ? txLookup.transactions : [];
 
   const computed = useMemo(() => runningBalances(rows), [rows]);
   const total = sheetTotal(rows);
@@ -149,7 +185,95 @@ function CashReceiptSheet() {
   const updateRow = (key: string, amount: string) => setRows((prev) => prev.map((r) => (r.key === key ? { ...r, amount, error: undefined } : r)));
   const removeRow = (key: string) => setRows((prev) => prev.filter((r) => r.key !== key));
 
-  const submit = () =>
+  const openTransaction = (tx: CashTransaction) => {
+    setRows(rowsOfTransaction(tx));
+    setEditing({ number: tx.transactionNumber, version: tx.version, voucherNumber: tx.voucherNumber });
+    setTransactionInput(tx.transactionNumber);
+    setSaved(null);
+    if (showDropdown) setBranchId(tx.branchId);
+    resetForm();
+  };
+
+  const handleLoad = (raw = transactionInput) =>
+    guard.run(async () => {
+      setTxOpen(false);
+      const number = normalizeTransactionNumber(raw);
+      if (!number) {
+        toast.error('Enter a transaction number like T-0001');
+        return;
+      }
+      if (rows.length > 0) {
+        const ok = await confirmAction({ title: 'Load transaction?', message: 'The entries on screen will be discarded.', confirmLabel: 'Load' });
+        if (!ok) return;
+      }
+      try {
+        openTransaction(await loadTransaction(number));
+        setNotice(null);
+      } catch {
+        // toasted by the hook
+      }
+    });
+
+  // A tap in the transactions list (`?transaction=T-0001`) opens that transaction straight away, once.
+  const handleLoadRef = useRef(handleLoad);
+  handleLoadRef.current = handleLoad;
+  const openedFromLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (!linkedTransaction || openedFromLink.current === linkedTransaction || !restored) return;
+    openedFromLink.current = linkedTransaction;
+    setTransactionInput(linkedTransaction);
+    void handleLoadRef.current(linkedTransaction);
+  }, [linkedTransaction, restored]);
+
+  const exitEditing = () => {
+    setEditing(null);
+    setTransactionInput(TX_PREFIX);
+    setRows([]);
+    setNotice(null);
+    resetForm();
+  };
+
+  const submitEdits = (current: Editing) =>
+    guard.run(async () => {
+      if (rows.length === 0) return;
+      const checked = validateRows(rows);
+      if (checked.hasErrors) {
+        setRows(checked.rows);
+        toast.error('Fix the highlighted rows before saving');
+        return;
+      }
+      const ok = await confirmAction({
+        title: 'Save edits?',
+        message: `${current.number}: ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}, total Rs. ${money(total)}. The saved payments are updated in place.`,
+        confirmLabel: 'Save edits',
+      });
+      if (!ok) return;
+      try {
+        const tx = await updateTransaction({ number: current.number, dto: buildUpdateRequest(rows, current.version) });
+        openTransaction(tx);
+        setNotice(`Saved edits to ${tx.transactionNumber} (version ${tx.version}), total Rs. ${money(tx.total)}`);
+      } catch (error) {
+        const errs = rowErrorsOf(error instanceof ApiError ? error.body : undefined);
+        if (errs.length) {
+          setRows((prev) => applyRowErrors(prev, errs));
+          toast.error('Nothing was saved. Some rows failed validation.');
+        } else if (error instanceof ApiError && error.status === 409) {
+          // Someone else changed it first: show their version instead of overwriting it.
+          try {
+            openTransaction(await loadTransaction(current.number));
+          } catch {
+            // toasted by the hook
+          }
+        }
+      }
+    });
+
+  const submit = () => {
+    if (editing) return submitEdits(editing);
+    return submitNew();
+  };
+
+  const submitNew = () =>
     guard.run(async () => {
       if (rows.length === 0) return;
       const checked = validateRows(rows);
@@ -171,6 +295,7 @@ function CashReceiptSheet() {
       try {
         const result = await save(buildSaveRequest(rows, batchId));
         setSaved({ result, branchId });
+        setNotice(null);
         setRows([]);
         setBatchId(newBatchId());
         resetForm();
@@ -183,7 +308,7 @@ function CashReceiptSheet() {
       }
     });
 
-  const canSave = has('cash_receipt:create') && rows.length > 0;
+  const canSave = has(editing ? 'cash_receipt:update' : 'cash_receipt:create') && rows.length > 0;
   const payable = !!selected?.payable;
   const needsBranch = !branchId;
 
@@ -218,7 +343,7 @@ function CashReceiptSheet() {
       {saved ? (
         <Card>
           <Text variant="label">
-            {saved.result.count} {saved.result.count === 1 ? 'receipt' : 'receipts'} saved, total Rs. {money(saved.result.total)} ({saved.result.voucherNumber})
+            {saved.result.transactionNumber ? `${saved.result.transactionNumber}: ` : ''}{saved.result.count} {saved.result.count === 1 ? 'receipt' : 'receipts'} saved, total Rs. {money(saved.result.total)} ({saved.result.voucherNumber})
           </Text>
           <Button label="Share voucher" loading={doc.isBusy} onPress={() => void doc.share({ path: cashReceiptPdfPath(saved.result.id, saved.branchId), fileName: `${saved.result.voucherNumber}.pdf` })} />
           <Button label="Print voucher" variant="secondary" disabled={doc.isBusy} onPress={() => void doc.print({ path: cashReceiptPdfPath(saved.result.id, saved.branchId), fileName: `${saved.result.voucherNumber}.pdf` })} />
@@ -234,6 +359,56 @@ function CashReceiptSheet() {
           <Button label="Dismiss" variant="secondary" onPress={() => setSaved(null)} />
         </Card>
       ) : null}
+
+      {notice ? (
+        <Card>
+          <Text variant="label">{notice}</Text>
+          <Button label="Dismiss" variant="secondary" onPress={() => setNotice(null)} />
+        </Card>
+      ) : null}
+
+      {editing ? (
+        <Card>
+          <Text variant="label">Editing {editing.number} ({editing.voucherNumber}, version {editing.version}). Changes update the saved payments in place.</Text>
+          <Button label="Exit edit" variant="secondary" onPress={exitEditing} />
+        </Card>
+      ) : null}
+
+      <Card>
+        <Input
+          label="Transaction #"
+          value={transactionInput}
+          onChangeText={(v) => {
+            // Keep the "T-" in front: typing just digits, or pasting "1", still reads as a T- number.
+            const up = v.toUpperCase();
+            setTransactionInput(up.startsWith(TX_PREFIX) ? up : `${TX_PREFIX}${up.replace(/^T-?/, '')}`);
+            setTxOpen(true);
+          }}
+          onFocus={() => setTxOpen(true)}
+          onSubmitEditing={() => void handleLoad()}
+          placeholder="T-0001"
+          autoCapitalize="characters"
+          autoCorrect={false}
+        />
+        {txOpen && !editing ? (
+          txLookup.isFetching && txMatches.length === 0 ? (
+            <Text muted>Searching...</Text>
+          ) : txMatches.length === 0 ? (
+            <Text muted>No transactions found</Text>
+          ) : (
+            txMatches.map((t) => (
+              <Pressable key={t.id} accessibilityRole="button" accessibilityLabel={`Transaction ${t.transactionNumber}`} onPress={() => { setTransactionInput(t.transactionNumber); void handleLoad(t.transactionNumber); }} style={[styles.suggestion, { borderColor: theme.border }]}>
+                <View style={styles.between}>
+                  <Text variant="label">{t.transactionNumber} · {t.voucherNumber}</Text>
+                  <Text variant="label">{money(t.total)}</Text>
+                </View>
+                <Text variant="caption" muted numberOfLines={1}>{formatDate(t.date)} · {t.customers.join(', ')}</Text>
+              </Pressable>
+            ))
+          )
+        ) : null}
+        <Button label="Load" variant="secondary" loading={isLoadingTransaction} disabled={transactionInput.trim() === TX_PREFIX} onPress={() => void handleLoad()} />
+      </Card>
 
       <Card>
         <Input
@@ -303,7 +478,7 @@ function CashReceiptSheet() {
       </Card>
 
       <Text variant="heading">Entries</Text>
-      {rows.length === 0 ? <Text muted>No entries yet. Type a voucher number above.</Text> : null}
+      {rows.length === 0 ? <Text muted>No entries yet. Type a voucher number above, or load a transaction.</Text> : null}
       {rows.map((r, i) => (
         <Card key={r.key}>
           <View style={styles.between}>
@@ -321,7 +496,7 @@ function CashReceiptSheet() {
         <Text variant="label">Entries: {rows.length}</Text>
         <Text variant="label">Total: Rs. {money(total)}</Text>
       </View>
-      <Button label="Save cash receipt" loading={guard.busy || isSaving} disabled={!canSave} onPress={() => void submit()} />
+      <Button label={editing ? 'Save edits' : 'Save cash receipt'} loading={guard.busy || isSaving || isUpdating} disabled={!canSave} onPress={() => void submit()} />
     </ScrollView>
   );
 }

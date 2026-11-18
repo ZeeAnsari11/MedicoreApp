@@ -8,17 +8,19 @@ import { Text } from './text';
 interface Props extends TextInputProps {
   label: string;
   error?: string;
+  /** Red border without a message under the field (the caller shows the message itself). */
+  invalid?: boolean;
   /** Adds a show/hide toggle (passwords). */
   secureToggle?: boolean;
 }
 
-export function Input({ label, error, secureToggle, style, ...rest }: Props) {
+export function Input({ label, error, invalid, secureToggle, style, ...rest }: Props) {
   const theme = useTheme();
   const [hidden, setHidden] = useState(true);
   return (
     <View style={styles.wrap}>
       <Text variant="label" muted>{label}</Text>
-      <View style={[styles.field, { backgroundColor: theme.surface, borderColor: error ? theme.danger : theme.border }]}>
+      <View style={[styles.field, { backgroundColor: theme.surface, borderColor: error || invalid ? theme.danger : theme.border }]}>
         <TextInput
           accessibilityLabel={label}
           placeholderTextColor={theme.textMuted}

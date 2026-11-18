@@ -1,6 +1,8 @@
+import { PaymentMethod } from '@/types/medicore';
 import {
   accountBalance, amountError, applyRowErrors, buildRow, buildSaveRequest, draftKey, money, newBatchId, parseDraft, rowErrorsOf,
-  runningBalances, serializeDraft, sheetTotal, todayLocal, validateRows, type LookupInvoice, type SheetRow,
+  buildUpdateRequest, normalizeTransactionNumber, rowsOfTransaction, runningBalances, serializeDraft, sheetTotal, todayLocal, validateRows, VOIDED_REASON,
+  type LookupInvoice, type SheetRow,
 } from '@/features/cash-receipt/sheet';
 
 const inv = (over: Partial<LookupInvoice> = {}): LookupInvoice => ({ id: 'i1', invoiceNumber: '0001', saleDate: '2026-11-10T00:00:00.000Z', customerId: 'c1', customerName: 'Ali', grandTotal: 1000, netTotal: 1000, received: 400, balance: 600, payable: true, customerBalance: 2000, ...over });
@@ -79,4 +81,43 @@ describe('batch id and draft', () => {
     expect(parseDraft(serializeDraft({ rows: [], batchId: 'b', branchId: null }))).toBeNull();
   });
   it('is keyed by tenant and user', () => expect(draftKey('t1', 'u1')).not.toBe(draftKey('t1', 'u2')));
+});
+
+describe('transactions', () => {
+  it.each([['T-0001', 'T-0001'], ['t-1', 'T-0001'], ['1', 'T-0001'], [' T0042 ', 'T-0042'], ['T-12345', 'T-12345']])('%p → %s', (raw, out) => {
+    expect(normalizeTransactionNumber(raw)).toBe(out);
+  });
+  it.each([[''], ['CR-000001'], ['T-'], ['abc'], ['T-1x']])('%p is not a transaction number', (raw) => {
+    expect(normalizeTransactionNumber(raw)).toBeNull();
+  });
+
+  const tx = {
+    id: 'r1', transactionNumber: 'T-0001', voucherNumber: 'CR-000001', branchId: 'b1', version: 3, date: '2026-11-18T00:00:00.000Z', method: PaymentMethod.CASH, total: 150,
+    rows: [
+      { entryId: 'e1', invoiceId: 'i1', invoiceNumber: '0001', customerId: 'c1', customerName: 'Ali', saleDate: '2026-11-10', customerBalance: 2000, voucherAmount: 1000, received: 400, balance: 700, amount: 100, paymentVoided: false },
+      { entryId: 'e2', invoiceId: 'i2', invoiceNumber: '0002', customerId: 'c1', customerName: 'Ali', saleDate: '2026-11-10', customerBalance: 2000, voucherAmount: 500, received: 0, balance: 50, amount: 50, paymentVoided: true },
+    ],
+  };
+
+  it('turns a transaction into sheet rows keyed by entry, with the editable maximum as the balance', () => {
+    const rows = rowsOfTransaction(tx);
+    expect(rows[0]).toMatchObject({ key: 'e1', entryId: 'e1', invoiceId: 'i1', balance: 700, amount: '100', error: undefined });
+    expect(rows[1].error).toBe(VOIDED_REASON);
+  });
+
+  it('builds the edit request: loaded entries keep their entryId, added rows have none', () => {
+    const rows = [...rowsOfTransaction(tx).slice(0, 1), row({ key: 'new', invoiceId: 'i9', amount: '25' })];
+    expect(buildUpdateRequest(rows, 3)).toEqual({
+      expectedVersion: 3,
+      rows: [{ entryId: 'e1', invoiceId: 'i1', amount: 100 }, { entryId: undefined, invoiceId: 'i9', amount: 25 }],
+    });
+  });
+
+  it('keeps the voided-payment error on re-validation but still checks amounts on the others', () => {
+    const rows = rowsOfTransaction(tx).map((r) => (r.entryId === 'e1' ? { ...r, amount: '9999' } : r));
+    const checked = validateRows(rows);
+    expect(checked.hasErrors).toBe(true);
+    expect(checked.rows[0].error).toMatch(/Cannot exceed the balance of 700.00/);
+    expect(checked.rows[1].error).toBe(VOIDED_REASON);
+  });
 });

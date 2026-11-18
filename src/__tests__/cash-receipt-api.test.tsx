@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
-import { cashReceiptPdfPath, useInvoiceLookup, useSaveCashReceipt } from '@/features/cash-receipt/use-cash-receipts';
+import { cashReceiptPdfPath, useInvoiceLookup, useLoadCashTransaction, useSaveCashReceipt, useUpdateCashTransaction } from '@/features/cash-receipt/use-cash-receipts';
 import { useBranchStore } from '@/store/branch';
 import { useSessionStore } from '@/store/session';
 import { useToastStore } from '@/store/toast';
@@ -113,6 +113,59 @@ describe('save cash receipt', () => {
     (global.fetch as jest.Mock).mockImplementationOnce(async () => { throw new TypeError('Network request failed'); });
     await act(async () => { await expect(result.current.save(dto)).rejects.toBeTruthy(); });
     expect(toastTexts()).toHaveLength(1);
+  });
+});
+
+const tx = { id: 'r1', transactionNumber: 'T-0001', voucherNumber: 'CR-000001', branchId: 'b1', version: 2, date: '2026-11-18T00:00:00.000Z', method: 'CASH', total: 100, rows: [] };
+const editDto = { expectedVersion: 2, rows: [{ entryId: 'e1', invoiceId: 'i1', amount: 120 }, { invoiceId: 'i2', amount: 30 }] };
+
+describe('load a transaction', () => {
+  it('GETs it by number once and returns the saved transaction', async () => {
+    routes['GET /sales/cash-receipts/by-number/T-0001'] = () => ({ body: tx });
+    const { result } = await renderHook(() => useLoadCashTransaction(), { wrapper: wrapper() });
+    let out: { version: number } | undefined;
+    await act(async () => { out = await result.current.loadTransaction('T-0001'); });
+    expect(out?.version).toBe(2);
+    expect(callsTo('GET', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(1);
+    expect(toastTexts()).toEqual([]);
+  });
+
+  it('says so when there is no such transaction', async () => {
+    routes['GET /sales/cash-receipts/by-number/T-0009'] = () => ({ status: 404, body: { message: 'Transaction not found' } });
+    const { result } = await renderHook(() => useLoadCashTransaction(), { wrapper: wrapper() });
+    await act(async () => { await expect(result.current.loadTransaction('T-0009')).rejects.toBeTruthy(); });
+    expect(toastTexts()).toEqual(['Transaction not found']);
+  });
+});
+
+describe('save edits', () => {
+  it('PATCHes the transaction once with the expected version and the rows, and toasts nothing itself', async () => {
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => ({ body: { ...tx, version: 3 } });
+    const { result } = await renderHook(() => useUpdateCashTransaction(), { wrapper: wrapper() });
+    let out: { version: number } | undefined;
+    await act(async () => { out = await result.current.updateTransaction({ number: 'T-0001', dto: editDto }); });
+    expect(out?.version).toBe(3);
+    const patches = callsTo('PATCH', '/sales/cash-receipts/by-number/T-0001');
+    expect(patches).toHaveLength(1);
+    expect(patches[0].body).toEqual(editDto);
+    expect(toastTexts()).toEqual([]);
+  });
+
+  it('a stale edit (409) is reported once and never retried', async () => {
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => ({ status: 409, body: { message: 'This transaction was changed by someone else. Reload it and try again.', currentVersion: 3 } });
+    const { result } = await renderHook(() => useUpdateCashTransaction(), { wrapper: wrapper() });
+    await act(async () => { await expect(result.current.updateTransaction({ number: 'T-0001', dto: editDto })).rejects.toBeTruthy(); });
+    expect(callsTo('PATCH', '/sales/cash-receipts/by-number/T-0001')).toHaveLength(1);
+    expect(toastTexts()).toEqual(['This transaction was changed by someone else. Reload it and try again.']);
+  });
+
+  it('per-row rejections are left to the screen: no toast, the error carries errors[]', async () => {
+    routes['PATCH /sales/cash-receipts/by-number/T-0001'] = () => ({ status: 400, body: { message: 'Some rows could not be saved', errors: [{ invoiceId: 'i1', reason: 'Amount exceeds the balance of 120.00' }] } });
+    const { result } = await renderHook(() => useUpdateCashTransaction(), { wrapper: wrapper() });
+    let caught: { body?: { errors?: unknown[] } } | undefined;
+    await act(async () => { await result.current.updateTransaction({ number: 'T-0001', dto: editDto }).catch((e) => { caught = e; }); });
+    expect(toastTexts()).toEqual([]);
+    expect(caught?.body?.errors).toHaveLength(1);
   });
 });
 

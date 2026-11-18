@@ -25,7 +25,7 @@ export default function MoreScreen() {
           <Text variant="label" muted>{section.title.toUpperCase()}</Text>
           {section.items.map((item) => (
             <Link key={item.href} href={item.href as never} asChild>
-              <Pressable accessibilityRole="button" style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+              <Pressable accessibilityRole="button" style={StyleSheet.flatten([styles.row, { backgroundColor: theme.surface, borderColor: theme.border }])}>
                 <MaterialCommunityIcons name={item.icon} size={22} color={theme.primary} />
                 <Text>{item.label}</Text>
               </Pressable>

@@ -64,7 +64,7 @@ export function AccountingHubScreen() {
       ) : null}
       {pages.map((p) => (
         <Link key={p.slug} href={p.href as never} asChild>
-          <Pressable accessibilityRole="button" accessibilityLabel={p.label} style={[styles.row, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel={p.label} style={StyleSheet.flatten([styles.row, { backgroundColor: theme.surface, borderColor: theme.border }])}>
             <MaterialCommunityIcons name={p.icon} size={22} color={theme.primary} />
             <View style={styles.flex}>
               <Text variant="label">{p.label}</Text>

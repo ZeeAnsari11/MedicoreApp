@@ -1,17 +1,16 @@
-import { router } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { router, Stack } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { ChipRow } from '@/components/chip-row';
+import { ActionSheet } from '@/components/ui/action-sheet';
+import { BottomBar } from '@/components/ui/bottom-bar';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { FormModal } from '@/components/ui/form-modal';
-import { FormScreen } from '@/components/ui/form-screen';
-import { Input } from '@/components/ui/input';
 import { PickerField } from '@/components/ui/picker-field';
+import { SettingRow } from '@/components/ui/setting-row';
 import { Text } from '@/components/ui/text';
 import { useAuth } from '@/features/auth/use-auth';
-import { BranchField } from '@/features/branches/branch-field';
 import { useBranchField } from '@/features/branches/use-branch-field';
 import { useBranches } from '@/features/branches/use-branches';
 import { CustomerForm } from '@/features/customers/customer-form';
@@ -19,13 +18,14 @@ import { buildCustomerCreate } from '@/features/customers/schema';
 import { useCustomers } from '@/features/customers/use-customers';
 import { useProducts } from '@/features/products/use-products';
 import { confirmAction } from '@/lib/confirm';
-import { formatRs } from '@/lib/format';
 import { useSubmitGuard } from '@/lib/use-submit-guard';
-import { spacing } from '@/theme';
+import { radius, spacing, useTheme } from '@/theme';
 import { PaymentMethod, PaymentStatus } from '@/types/medicore';
 import type { Sale } from '@/types/medicore';
 
-import { LineEntry } from './line-entry';
+import { AddItemSheet } from './add-item-sheet';
+import { LineItemCard } from './line-item-card';
+import { PaymentSheet } from './payment-sheet';
 import { buildSaleItems, estimateLineTotal, linesFromSale, restoreMapFromSale, validateSaleDraft, type SaleLine } from './sale-lines';
 import { useLastSalePrices, useOrderBookers, useSaleMutations } from './use-sales';
 
@@ -35,15 +35,14 @@ const METHODS = [
   { value: PaymentMethod.CREDIT, label: 'Credit' },
   { value: PaymentMethod.BANK_TRANSFER, label: 'Bank transfer' },
 ];
-const STATUSES = [
-  { value: PaymentStatus.UNPAID, label: 'Unpaid' },
-  { value: PaymentStatus.PARTIAL, label: 'Partial' },
-  { value: PaymentStatus.PAID, label: 'Paid' },
-];
 
-/** The New Sale screen, or (with `editSale`) the same screen prefilled to edit an unpaid sale. */
+/**
+ * New Sale in three steps (sale details + line items → Add item → Payment), or (with `editSale`) the same first screen
+ * prefilled to edit an unpaid sale, saved directly (no payment step, as on the web).
+ */
 export function SaleForm({ editSale }: { editSale?: Sale }) {
   const isEdit = !!editSale;
+  const theme = useTheme();
   const { user, has } = useAuth();
   const { branches } = useBranches();
   const branchField = useBranchField();
@@ -67,18 +66,36 @@ export function SaleForm({ editSale }: { editSale?: Sale }) {
   const [customerId, setCustomerId] = useState(editSale?.customerId ?? '');
   const [method, setMethod] = useState<PaymentMethod>(editSale?.paymentMethod ?? PaymentMethod.CASH);
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(PaymentStatus.UNPAID);
-  const [amountPaid, setAmountPaid] = useState('');
+  // What the user typed in Amount paid; null = follow the payment status (see amountPaid below).
+  const [typedAmount, setTypedAmount] = useState<string | null>(null);
   const [lines, setLines] = useState<SaleLine[]>(() => (editSale ? linesFromSale(editSale) : []));
-  const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [entryToken, setEntryToken] = useState(0);
+  /** null = sheet closed; '' = adding a new line; otherwise the key of the line being edited. */
+  const [itemSheet, setItemSheet] = useState<string | null>(null);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [methodSheet, setMethodSheet] = useState(false);
   const [pickedProduct, setPickedProduct] = useState('');
   const [customerModal, setCustomerModal] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [restoreByBatch] = useState(() => (editSale ? restoreMapFromSale(editSale) : undefined));
 
-  const editing = lines.find((l) => l.key === editingKey) ?? null;
+  const editing = itemSheet ? (lines.find((l) => l.key === itemSheet) ?? null) : null;
   const lastPrices = useLastSalePrices(customerId || null, [pickedProduct], branchId);
   const estimate = lines.reduce((s, l) => s + estimateLineTotal(l), 0);
+  const units = lines.reduce((s, l) => s + l.quantity, 0);
+
+  // Same as the web form: Paid fills the amount with the total (and follows it as lines change), Unpaid sets 0, and
+  // the field stays editable either way. Switching to Partial keeps the amount shown so far.
+  const autoAmount = paymentStatus === PaymentStatus.PAID ? estimate.toFixed(2) : paymentStatus === PaymentStatus.UNPAID ? '0' : null;
+  const amountPaid = typedAmount ?? autoAmount ?? '0';
+  const changePaymentStatus = (status: PaymentStatus) => {
+    setTypedAmount(status === PaymentStatus.PARTIAL ? amountPaid : null);
+    setPaymentStatus(status);
+  };
   const branchName = branches.find((b) => b.id === branchId)?.name ?? '';
+  const customerName = customersApi.customers.find((c) => c.id === customerId)?.name ?? editSale?.customerName;
+  const bookerName = isEdit
+    ? (editSale?.orderBookerName ?? '')
+    : (orderBookers.find((o) => o.id === orderBookerId)?.name ?? user?.fullName ?? user?.username ?? '');
 
   const changeBranch = (id: string) => {
     if (id === branchId) return;
@@ -87,8 +104,7 @@ export function SaleForm({ editSale }: { editSale?: Sale }) {
     setPickedBooker('');
     setCustomerId('');
     setLines([]);
-    setEditingKey(null);
-    setEntryToken((t) => t + 1);
+    setItemSheet(null);
   };
 
   const submit = () =>
@@ -116,18 +132,17 @@ export function SaleForm({ editSale }: { editSale?: Sale }) {
             customerId: customerId || undefined,
             paymentMethod: method,
             paymentStatus,
-            // PAID/UNPAID amounts are derived by the backend; only a partial payment needs the typed amount.
-            amountPaid: paymentStatus === PaymentStatus.PARTIAL ? Number(amountPaid) : undefined,
+            // Sent for every status, like the web; the backend validates it against the invoice total.
+            amountPaid: Number(amountPaid) || 0,
             items,
           });
           // Ready for the next sale on the same branch, like the web.
+          setPaymentOpen(false);
           setLines([]);
-          setEditingKey(null);
           setCustomerId('');
           setMethod(PaymentMethod.CASH);
           setPaymentStatus(PaymentStatus.UNPAID);
-          setAmountPaid('');
-          setEntryToken((t) => t + 1);
+          setTypedAmount(null);
         }
       } catch (error) {
         // The mutation already toasted the server's message; keep everything typed. A 409 on edit means a payment or
@@ -136,86 +151,144 @@ export function SaleForm({ editSale }: { editSale?: Sale }) {
       }
     });
 
+  const branchLocked = isEdit || branchField.locked;
+  const branchOptions = branchField.branches.map((b) => ({ value: b.id, label: b.isMain ? `${b.name} (Main)` : b.name }));
+
   return (
     <>
-      <FormScreen>
-        {isEdit || branchField.locked ? (
-          <Input label="Branch" value={branchName} editable={false} />
-        ) : (
-          <BranchField field={branchField} value={branchId ?? ''} onChange={changeBranch} />
-        )}
-        <PickerField
-          label="Customer"
-          value={customerId}
-          onChange={setCustomerId}
-          clearable
-          disabled={!branchId}
-          placeholder={branchId ? 'Walk-in (no customer)' : 'Select a branch first'}
-          options={customersApi.customers.map((c) => ({ value: c.id, label: c.name, hint: c.phone }))}
-          onCreateNew={has('customers:create') ? () => setCustomerModal(true) : undefined}
-          createLabel="Create new customer"
-        />
-        {isEdit ? (
-          <Input label="Order Booker" value={editSale?.orderBookerName ?? ''} editable={false} />
-        ) : canPickBooker ? (
-          <PickerField label="Order Booker" value={orderBookerId} onChange={setPickedBooker} options={orderBookers.map((o) => ({ value: o.id, label: o.name }))} />
-        ) : (
-          <Input label="Order Booker" value={user?.fullName ?? user?.username ?? ''} editable={false} />
-        )}
-        {isEdit ? null : <ChipRow label="Method" value={method} onChange={setMethod} options={METHODS} />}
+      <Stack.Screen
+        options={{
+          headerTitle: () => (
+            <View>
+              <Text variant="heading">{isEdit ? 'Edit Sale' : 'New Sale'}</Text>
+              <Text variant="caption" muted>{isEdit ? `Invoice ${editSale?.invoiceNumber}` : branchName ? `Selling from ${branchName}` : 'Selling'}</Text>
+            </View>
+          ),
+        }}
+      />
+      <ScrollView style={{ backgroundColor: theme.background }} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <PickerField
+            label="Customer"
+            value={customerId}
+            onChange={setCustomerId}
+            clearable
+            disabled={!branchId}
+            options={customersApi.customers.map((c) => ({ value: c.id, label: c.name, hint: c.phone }))}
+            onCreateNew={has('customers:create') ? () => setCustomerModal(true) : undefined}
+            createLabel="Create new customer"
+            renderTrigger={({ open }) => <SettingRow label="Customer" value={customerName} placeholder={branchId ? 'Walk-in (no customer)' : 'Select a branch first'} onPress={branchId ? open : undefined} />}
+          />
+          {isEdit ? null : (
+            <SettingRow label="Payment method" value={METHODS.find((m) => m.value === method)?.label} onPress={() => setMethodSheet(true)} />
+          )}
+          {!isEdit && canPickBooker ? (
+            <PickerField
+              label="Order Booker"
+              value={orderBookerId}
+              onChange={setPickedBooker}
+              options={orderBookers.map((o) => ({ value: o.id, label: o.name }))}
+              renderTrigger={({ open }) => <SettingRow label="Order booker" value={bookerName} onPress={open} />}
+            />
+          ) : (
+            <SettingRow label="Order booker" value={bookerName} />
+          )}
+          {branchLocked ? (
+            <SettingRow label="Branch" value={branchName || (branchField.locked ? branchField.lockedBranchName : '')} locked last />
+          ) : (
+            <PickerField
+              label="Branch"
+              value={branchId ?? ''}
+              onChange={changeBranch}
+              options={branchOptions}
+              renderTrigger={({ open }) => <SettingRow label="Branch" value={branchName} placeholder="Select a branch" onPress={open} last />}
+            />
+          )}
+        </View>
 
-        <Text variant="heading">Line items</Text>
-        <LineEntry
-          key={`${editingKey ?? 'new'}-${entryToken}`}
-          products={productsApi.products}
-          branchId={branchId}
-          lines={lines}
-          editing={editing}
-          restoreByBatch={editSale ? restoreMapFromSale(editSale) : undefined}
-          lastPrices={lastPrices}
-          canDiscount={has('sales:discount')}
-          onProductChange={setPickedProduct}
-          onCommit={(line) => {
-            setLines((prev) => (editingKey ? prev.map((l) => (l.key === editingKey ? line : l)) : [...prev, line]));
-            setEditingKey(null);
-          }}
-          onCancelEdit={() => setEditingKey(null)}
-        />
-        {lines.length === 0 ? <Text muted>No lines yet.</Text> : null}
-        {lines.map((l, i) => (
-          <Card key={l.key}>
-            <View style={styles.between}>
-              <Text variant="label" style={styles.flex}>{i + 1}. {l.productName}</Text>
-              <Text variant="label">{formatRs(estimateLineTotal(l))}</Text>
-            </View>
-            <Text muted>
-              {l.quantity} × {formatRs(l.unitPrice)}{l.discountPercent ? ` − ${l.discountPercent}%` : ''}{l.taxPercent ? ` + ${l.taxPercent}% tax` : ''}
-            </Text>
-            <Text variant="caption" muted>{l.allocations ? `Batches: ${l.allocations.map((a) => `${a.batchNumber} (${a.quantity})`).join(', ')}` : 'Batches: automatic (nearest expiry first)'}</Text>
-            <View style={styles.row}>
-              <View style={styles.flex}><Button label="Edit" variant="secondary" disabled={guard.busy} onPress={() => setEditingKey(l.key)} /></View>
-              <View style={styles.flex}><Button label="Remove" variant="secondary" disabled={guard.busy} onPress={() => { setLines((prev) => prev.filter((x) => x.key !== l.key)); if (editingKey === l.key) setEditingKey(null); }} /></View>
-            </View>
-          </Card>
+        <View style={styles.linesHead}>
+          <Text variant="heading">Line items</Text>
+          <View style={[styles.count, { backgroundColor: `${theme.primary}1A` }]}>
+            <Text variant="caption" color={theme.primary}>{lines.length}</Text>
+          </View>
+          <View style={styles.flex} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add item"
+            accessibilityState={{ disabled: !branchId || guard.busy }}
+            disabled={!branchId || guard.busy}
+            onPress={() => setItemSheet('')}
+            style={[styles.addButton, { backgroundColor: theme.primary, opacity: !branchId || guard.busy ? 0.5 : 1 }]}
+          >
+            <MaterialCommunityIcons name="plus" size={18} color={theme.onPrimary} />
+            <Text variant="label" color={theme.onPrimary}>Add item</Text>
+          </Pressable>
+        </View>
+        {lines.length === 0 ? <Text muted style={styles.empty}>No items added yet. Tap “Add item” to begin.</Text> : null}
+        {lines.map((l) => (
+          <LineItemCard
+            key={l.key}
+            line={l}
+            disabled={guard.busy}
+            onEdit={() => setItemSheet(l.key)}
+            onRemove={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}
+          />
         ))}
+        <Text variant="caption" muted>
+          Each line defaults to the nearest-expiry batch. A quantity beyond that batch&apos;s stock splits into the next batches.
+        </Text>
+        {isEdit ? <Text variant="caption" muted>Unpaid invoice: payment is recorded separately after saving.</Text> : null}
+        {isEdit && formError ? <Text accessibilityRole="alert" color={theme.danger}>{formError}</Text> : null}
+      </ScrollView>
 
+      <BottomBar caption="Grand total" amount={estimate.toFixed(2)}>
         {isEdit ? (
-          <Text muted>Unpaid invoice: payment is recorded separately after saving.</Text>
+          <Button label="Save changes" loading={guard.busy} disabled={!branchId || lines.length === 0} onPress={submit} />
         ) : (
-          <Card>
-            <ChipRow label="Payment" value={paymentStatus} onChange={setPaymentStatus} options={STATUSES} />
-            {paymentStatus === PaymentStatus.PARTIAL ? <Input label="Amount paid" value={amountPaid} onChangeText={setAmountPaid} keyboardType="decimal-pad" /> : null}
-            {paymentStatus === PaymentStatus.PAID ? <Text variant="caption" muted>The full invoice amount is recorded as paid by the server.</Text> : null}
-          </Card>
+          <Button label="Next: Payment →" disabled={!branchId || lines.length === 0} onPress={() => { setFormError(null); setPaymentOpen(true); }} />
         )}
-        <Card>
-          <Text muted>Estimated total</Text>
-          <Text variant="heading">{formatRs(estimate)}</Text>
-          <Text variant="caption" muted>An estimate from the lines above. The server calculates the final subtotal, discount, tax and total.</Text>
-        </Card>
-        {formError ? <Text style={styles.error}>{formError}</Text> : null}
-        <Button label={isEdit ? 'Save changes' : 'Place sale'} loading={guard.busy} disabled={!branchId || lines.length === 0} onPress={submit} />
-      </FormScreen>
+      </BottomBar>
+
+      <AddItemSheet
+        visible={itemSheet !== null}
+        key={itemSheet ?? 'closed'}
+        branchName={branchName}
+        products={productsApi.products}
+        branchId={branchId}
+        lines={lines}
+        editing={editing}
+        restoreByBatch={restoreByBatch}
+        lastPrices={lastPrices}
+        canDiscount={has('sales:discount')}
+        onProductChange={setPickedProduct}
+        onCommit={(line) => {
+          setLines((prev) => (editing ? prev.map((l) => (l.key === editing.key ? line : l)) : [...prev, line]));
+          setItemSheet(null);
+        }}
+        onClose={() => setItemSheet(null)}
+      />
+
+      {isEdit ? null : (
+        <PaymentSheet
+          visible={paymentOpen}
+          summary={{ customer: customerName ?? 'Walk-in', method: METHODS.find((m) => m.value === method)?.label ?? method, orderBooker: bookerName, lineCount: lines.length, units }}
+          grandTotal={estimate}
+          paymentStatus={paymentStatus}
+          onPaymentStatus={changePaymentStatus}
+          amountPaid={amountPaid}
+          onAmountPaid={setTypedAmount}
+          error={formError}
+          busy={guard.busy}
+          onComplete={submit}
+          onClose={() => setPaymentOpen(false)}
+        />
+      )}
+
+      <ActionSheet
+        title="Payment method"
+        onClose={() => setMethodSheet(false)}
+        actions={methodSheet ? METHODS.map((m) => ({ label: m.label, checked: m.value === method, onPress: () => setMethod(m.value) })) : null}
+      />
 
       <FormModal visible={customerModal} title="Create Customer" onClose={() => setCustomerModal(false)}>
         <CustomerForm
@@ -238,7 +311,10 @@ export function SaleForm({ editSale }: { editSale?: Sale }) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  row: { flexDirection: 'row', gap: spacing.md },
-  between: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  error: { color: '#B3261E' },
+  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xxl },
+  card: { borderWidth: 1, borderRadius: radius.lg, overflow: 'hidden' },
+  linesHead: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.sm },
+  count: { borderRadius: 999, minWidth: 24, paddingHorizontal: spacing.sm, paddingVertical: 2, alignItems: 'center' },
+  addButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, borderRadius: 999, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+  empty: { textAlign: 'center', paddingVertical: spacing.xl },
 });

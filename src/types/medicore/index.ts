@@ -44,6 +44,7 @@ export type {
   UpdateSaleRequest,
   SalePaymentRow,
   PaginatedSales,
+  SalesSummary,
   OrderBookerOption,
   ReassignOrderBookerRequest,
   PendingOrderBookerSummary,
@@ -121,5 +122,18 @@ export type {
   BalanceSheetResponse,
   AccountingOverviewResponse,
 } from './accounting';
+export type {
+  LookupInvoice,
+  CashReceiptRowInput,
+  CashReceiptRequest,
+  CashReceiptRowError,
+  CashReceiptResult,
+  CashTransactionRow,
+  CashTransaction,
+  UpdateCashTransactionRequest,
+  CashTransactionHistoryEntry,
+  CashTransactionSummary,
+  PaginatedCashTransactions,
+} from './cash-receipt';
 export type { SsrView, SsrRow, SsrReport, SsrInvoice } from './ssr';
 export * from './permission-modules';

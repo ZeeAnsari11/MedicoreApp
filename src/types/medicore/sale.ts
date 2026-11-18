@@ -109,11 +109,23 @@ export interface SalePaymentRow {
   isRefund?: boolean;
 }
 
+/** Totals over every sale matching the list filters (not just the current page). */
+export interface SalesSummary {
+  orders: number;
+  gross: number;
+  returned: number;
+  net: number;
+  paid: number;
+  remaining: number;
+}
+
 export interface PaginatedSales {
   items: Sale[];
   total: number;
   page: number;
   limit: number;
+  /** Only present when the list is filtered to a customer or an Order Booker. */
+  summary?: SalesSummary;
 }
 
 /** Editable fields of an unpaid sale; the invoice number never changes. */
